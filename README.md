@@ -1,68 +1,116 @@
-# llama-cpp-lyrn --- Task Prompt for Jules
 
-This is a working implementation task.
+# llama-cpp-lyrn — Implementation Directive (API Alignment Update)
 
-We are building `llama-cpp-lyrn`: a minimal, deterministic Python
-binding around llama.cpp for LYRN.
+This is a working implementation task for building `llama-cpp-lyrn`.
 
-Keep it simple. Keep it tight. No feature creep.
+This document is intentionally explicit so no clarification questions are required.
 
-------------------------------------------------------------------------
+We are building a minimal, deterministic Python binding around CURRENT upstream llama.cpp
+for use exclusively by `model_runner.py` inside LYRN.
 
-## Repo Structure (Current)
+Keep it minimal. Keep it controlled. No feature creep.
 
-repo-root/ │ ├── .git/ ├── llama-cpp-python source/ (backend source
-only) ├── model_runner.py (defines actual runtime usage) └── README.md
+---
 
-Important:
+## 1️⃣ Build Ownership & Layout
 
-• The repo root is the build root. • `llama-cpp-python source/` is
-backend source only. • Do NOT build inside that folder directly. • All
-packaging, CMake control, and wheel logic must be owned from repo root.
+• Repo root is the build root.
+• All packaging, CMake configuration, and wheel logic live at repo root.
+• Create new `pyproject.toml` and `CMakeLists.txt` at repo root.
+• Backend C/C++ source is referenced from the root build.
 
-------------------------------------------------------------------------
+The folder:
 
-## Scope Definition (Explicit)
+    llama-cpp-python source/
 
-The binding surface must be derived directly from:
+is reference-only.
+
+Do not treat it as canonical.
+Do not preserve it blindly.
+Do not inherit legacy binding logic.
+
+---
+
+## 2️⃣ Upstream Alignment (Non-Negotiable)
+
+We target the CURRENT upstream llama.cpp API.
+
+We do NOT:
+
+• Maintain compatibility with old symbols
+• Recreate deprecated functions
+• Patch missing symbols like `llama_get_kv_self`
+• Carry forward obsolete ctypes mappings
+
+If upstream removed a symbol, it must NOT exist in our binding.
+
+Bindings must match the current header definitions exactly.
+
+This is a forward-only binding.
+
+---
+
+## 3️⃣ Binding Strategy (Reductionist Rebuild)
+
+We are NOT fixing 200+ legacy ctypes bindings.
+
+We are:
+
+• Rebuilding a minimal binding layer
+• Defining only the ctypes mappings strictly required
+• Mapping only the functions used by `Llama.__init__`
+• Mapping only the functions required by `create_chat_completion`
+• Removing all other ctypes references
+
+Do NOT try to “repair” the old binding set.
+
+Strip aggressively and rebuild against the current llama.cpp headers.
+
+---
+
+## 4️⃣ Scope Definition (Derived from model_runner.py)
+
+The binding surface is derived strictly from:
 
     model_runner.py
 
-Do NOT guess what LYRN uses. Do NOT preserve upstream features "just in
-case."
+Keep only what is required for:
 
-Only keep functionality that is:
+• Constructor parameters used there
+• `create_chat_completion(..., stream=True)`
+• Streaming output format used there
+• stderr log behavior required for metric parsing
 
-• Imported in model_runner.py • Instantiated in model_runner.py • Called
-in model_runner.py • Required to make model_runner.py function correctly
+Everything else is removed.
 
-Everything else is removed or disabled.
+---
 
-If model_runner.py does not use it, it does not belong in this binding.
+## 5️⃣ Required Public API (Stable Surface)
 
-------------------------------------------------------------------------
+from llama_cpp import Llama
 
-## What model_runner.py Requires
+Constructor:
 
-The binding must support:
+Llama(
+    model_path: str,
+    n_ctx: int,
+    n_threads: int,
+    n_gpu_layers: int,
+    n_batch: int,
+    use_mlock: bool,
+    use_mmap: bool,
+    chat_format: Optional[str],
+    add_bos: bool,
+    add_eos: bool,
+    verbose: bool,
+)
 
-1.  `from llama_cpp import Llama`
-2.  Constructor with these parameters:
-    -   model_path
-    -   n_ctx
-    -   n_threads
-    -   n_gpu_layers
-    -   n_batch
-    -   use_mlock
-    -   use_mmap
-    -   chat_format
-    -   add_bos
-    -   add_eos
-    -   verbose
-3.  `create_chat_completion(..., stream=True)`
-4.  Streaming output in this exact shape:
+Required method:
 
-``` python
+create_chat_completion(..., stream: bool)
+
+Streaming MUST yield:
+
 {
     "choices": [
         {
@@ -72,81 +120,66 @@ The binding must support:
         }
     ]
 }
-```
 
-No alternate streaming schema allowed.
+No alternate streaming schema.
 
-model_runner.py captures stderr for metrics parsing. Do NOT suppress
-stderr output from llama.cpp. Do NOT redirect logs internally unless
-explicitly required.
+stderr output must remain visible.
 
-------------------------------------------------------------------------
+---
 
-## Error Handling & Debugging Requirements
+## 6️⃣ CMake Configuration Rules
 
-This layer must remain debuggable.
+Root CMake must:
 
-Rules:
+• Compile llama.cpp as shared library
+• Disable server
+• Disable tools
+• Disable examples
+• Disable tests
+• Disable multimodal
+• Build only inference components
 
-• Do not swallow exceptions silently. • If model loading fails, raise
-clear Python exceptions. • If generation fails, propagate meaningful
-error messages. • Preserve llama.cpp stderr output for external capture.
-• Do not wrap errors in generic catch-all handlers. • Avoid hidden
-fallback behavior that masks backend failures. • If GPU backend fails to
-initialize, log the reason clearly. • If architecture mismatch occurs
-(e.g., unknown GGUF architecture), raise explicit error.
+This build is system-specific and not intended for general reuse.
 
-When debugging:
+---
 
-• Ensure CMake configuration errors surface clearly. • Ensure backend
-selection (CPU vs GPU) is visible in logs. • Ensure build flags can be
-verified from verbose output. • Ensure wheel backend variant can be
-determined at runtime (e.g., via logging or attribute).
-
-Determinism includes deterministic failure modes.
-
-Errors must be clear and actionable.
-
-------------------------------------------------------------------------
-
-## Build Rules
-
-Default build:
-
-• CPU-only • No server • No tools • No tests • No examples • No
-multimodal • No embeddings
-
-GPU support:
-
-• Provided via prebuilt wheels • Users must NOT rebuild manually •
-Backend selected via wheel at install time • Runtime GPU activation when
-`n_gpu_layers > 0`
-
-------------------------------------------------------------------------
-
-## Qwen 3.5 Support
+## 7️⃣ Qwen 3.5 Requirement
 
 Must load GGUF models where:
 
     general.architecture = qwen35
 
-No "unknown model architecture" errors allowed.
+Use current upstream llama.cpp that supports this.
 
-------------------------------------------------------------------------
+Do not attempt to reintroduce legacy compatibility layers.
 
-## Context Behavior (As Used by model_runner.py)
+---
 
-• Model stays loaded • Context persists across calls • No implicit
-resets • No hidden lifecycle changes • Binding must not interfere with
-snapshot/delta logic
+## 8️⃣ Context Behavior
 
-model_runner.py controls lifecycle.
+• Model remains loaded
+• Context persists
+• No implicit resets
+• Binding must not override lifecycle logic
 
-The binding only provides inference.
+`model_runner.py` owns lifecycle.
 
-------------------------------------------------------------------------
+---
 
-That is the contract.
+## 9️⃣ Error Handling & Debugging
 
-Implement only what model_runner.py requires. Remove everything else.
-Keep it deterministic.
+• Do not swallow exceptions.
+• Surface symbol resolution errors clearly.
+• Surface backend mismatches clearly.
+• Preserve stderr output.
+• Failure modes must be deterministic.
+
+---
+
+This is a forward-only minimal binding.
+
+We rebuild against current llama.cpp.
+We do not preserve legacy API compatibility.
+We strip everything not required.
+
+Implement incrementally and test continuously.

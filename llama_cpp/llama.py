@@ -125,10 +125,11 @@ class Llama:
             c_messages[i].role = r
             c_messages[i].content = c
 
+        tmpl = llama_cpp._lib.llama_model_chat_template(self.model, None)
+
         buf = (ctypes.c_char * 4096)()
         n = llama_cpp._lib.llama_chat_apply_template(
-            self.model,
-            None,
+            tmpl,
             c_messages,
             len(messages),
             True,
@@ -138,8 +139,7 @@ class Llama:
         if n < 0:
             buf = (ctypes.c_char * -n)()
             n = llama_cpp._lib.llama_chat_apply_template(
-                self.model,
-                None,
+                tmpl,
                 c_messages,
                 len(messages),
                 True,

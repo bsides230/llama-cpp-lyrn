@@ -21,6 +21,7 @@ class Llama:
         verbose: bool = True,
     ):
         self.verbose = verbose
+        self.n_batch = n_batch
         if self.verbose:
             print(f"llama-cpp-lyrn: Loading model from {model_path} (n_ctx={n_ctx}, n_gpu_layers={n_gpu_layers})")
 
@@ -51,6 +52,10 @@ class Llama:
         # Create reusable batch
         self.batch = llama_cpp._lib.llama_batch_init(n_batch, 0, 1)
 
+        # Validate batch pointers
+        if not self.batch.token:
+            raise RuntimeError("llama_batch_init returned batch with NULL token pointer")
+
         # Setup finalizer properly
         self._finalizer = weakref.finalize(self, self._cleanup_resources, llama_cpp._lib, self.model, self.ctx, self.batch)
 
@@ -69,7 +74,8 @@ class Llama:
 
     def _tokenize(self, text: str, add_special: bool, parse_special: bool = False) -> List[int]:
         text_bytes = text.encode("utf-8")
-        n_tokens = len(text_bytes) + (1 if add_special else 0)
+        # Allocate at least 1 token to avoid zero-length array issues
+        n_tokens = max(len(text_bytes) + (1 if add_special else 0), 1)
         tokens = (llama_cpp.llama_token * n_tokens)()
         vocab = llama_cpp._lib.llama_model_get_vocab(self.model)
 
@@ -147,8 +153,25 @@ class Llama:
                 len(buf)
             )
 
+        # If template application still fails, fall back to NULL (chatml default)
+        if n < 0:
+            buf = (ctypes.c_char * 4096)()
+            n = llama_cpp._lib.llama_chat_apply_template(
+                None,
+                c_messages,
+                len(messages),
+                True,
+                buf,
+                len(buf)
+            )
+            if n < 0:
+                raise RuntimeError(f"llama_chat_apply_template failed with error code {n}")
+
         prompt = buf.raw[:n].decode("utf-8")
         tokens = self._tokenize(prompt, add_special=False, parse_special=True)
+
+        if not tokens:
+            raise RuntimeError("Tokenization produced no tokens from the prompt")
 
         chain_params = llama_cpp._lib.llama_sampler_chain_default_params()
         chain = llama_cpp._lib.llama_sampler_chain_init(chain_params)
@@ -161,6 +184,7 @@ class Llama:
         llama_cpp._lib.llama_sampler_chain_add(chain, llama_cpp._lib.llama_sampler_init_top_k(top_k))
         llama_cpp._lib.llama_sampler_chain_add(chain, llama_cpp._lib.llama_sampler_init_top_p(top_p, 1))
         llama_cpp._lib.llama_sampler_chain_add(chain, llama_cpp._lib.llama_sampler_init_temp(temperature))
+        llama_cpp._lib.llama_sampler_chain_add(chain, llama_cpp._lib.llama_sampler_init_dist(42))
 
         return self._generate_stream(tokens, chain, max_tokens)
 
@@ -168,20 +192,33 @@ class Llama:
         vocab = llama_cpp._lib.llama_model_get_vocab(self.model)
         eos_token = llama_cpp._lib.llama_vocab_eos(vocab)
 
-        self.batch.n_tokens = 0
-        for i, tok in enumerate(prompt_tokens):
-            self.batch.token[i] = tok
-            self.batch.pos[i] = i
-            self.batch.n_seq_id[i] = 1
-            self.batch.seq_id[i][0] = 0
-            self.batch.logits[i] = 1 if i == len(prompt_tokens) - 1 else 0
-        self.batch.n_tokens = len(prompt_tokens)
+        # Process prompt in batches if it exceeds batch capacity
+        batch_size = self.n_batch
+        total_tokens = len(prompt_tokens)
 
-        llama_cpp._lib.llama_decode(self.ctx, self.batch)
+        n_cur = 0
+        for batch_start in range(0, total_tokens, batch_size):
+            batch_end = min(batch_start + batch_size, total_tokens)
+            chunk = prompt_tokens[batch_start:batch_end]
 
-        n_cur = len(prompt_tokens)
+            self.batch.n_tokens = 0
+            for i, tok in enumerate(chunk):
+                self.batch.token[i] = tok
+                self.batch.pos[i] = batch_start + i
+                self.batch.n_seq_id[i] = 1
+                self.batch.seq_id[i][0] = 0
+                # Only request logits for the very last token of the entire prompt
+                self.batch.logits[i] = 1 if (batch_start + i == total_tokens - 1) else 0
+            self.batch.n_tokens = len(chunk)
 
-        while n_cur <= len(prompt_tokens) + max_tokens:
+            ret = llama_cpp._lib.llama_decode(self.ctx, self.batch)
+            if ret != 0:
+                llama_cpp._lib.llama_sampler_free(sampler)
+                raise RuntimeError(f"llama_decode failed with error code {ret}")
+
+        n_cur = total_tokens
+
+        while n_cur <= total_tokens + max_tokens:
             new_token_id = llama_cpp._lib.llama_sampler_sample(sampler, self.ctx, -1)
             llama_cpp._lib.llama_sampler_accept(sampler, new_token_id)
 
@@ -207,7 +244,10 @@ class Llama:
             self.batch.logits[0] = 1
             self.batch.n_tokens = 1
 
-            llama_cpp._lib.llama_decode(self.ctx, self.batch)
+            ret = llama_cpp._lib.llama_decode(self.ctx, self.batch)
+            if ret != 0:
+                llama_cpp._lib.llama_sampler_free(sampler)
+                raise RuntimeError(f"llama_decode failed during generation with error code {ret}")
             n_cur += 1
 
         llama_cpp._lib.llama_sampler_free(sampler)

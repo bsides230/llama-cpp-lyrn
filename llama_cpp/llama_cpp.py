@@ -158,6 +158,9 @@ _lib.llama_sampler_init_top_k.restype = llama_sampler_p
 _lib.llama_sampler_init_temp.argtypes = [ctypes.c_float]
 _lib.llama_sampler_init_temp.restype = llama_sampler_p
 
+_lib.llama_sampler_init_dist.argtypes = [ctypes.c_uint32]
+_lib.llama_sampler_init_dist.restype = llama_sampler_p
+
 _lib.llama_sampler_chain_add.argtypes = [llama_sampler_p, llama_sampler_p]
 _lib.llama_sampler_chain_add.restype = None
 

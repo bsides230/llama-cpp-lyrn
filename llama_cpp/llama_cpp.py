@@ -176,7 +176,10 @@ class llama_chat_message(ctypes.Structure):
         ("content", ctypes.c_char_p),
     ]
 
+_lib.llama_model_chat_template.argtypes = [llama_model_p, ctypes.c_char_p]
+_lib.llama_model_chat_template.restype = ctypes.c_char_p
+
 _lib.llama_chat_apply_template.argtypes = [
-    llama_model_p, ctypes.c_char_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_bool, ctypes.c_char_p, ctypes.c_int32
+    ctypes.c_char_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_bool, ctypes.c_char_p, ctypes.c_int32
 ]
 _lib.llama_chat_apply_template.restype = ctypes.c_int32

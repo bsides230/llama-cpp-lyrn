@@ -56,6 +56,8 @@ class Llama:
         if not self.batch.token:
             raise RuntimeError("llama_batch_init returned batch with NULL token pointer")
 
+        self.n_past = 0
+
         # Setup finalizer properly
         self._finalizer = weakref.finalize(self, self._cleanup_resources, llama_cpp._lib, self.model, self.ctx, self.batch)
 
@@ -204,7 +206,7 @@ class Llama:
             self.batch.n_tokens = 0
             for i, tok in enumerate(chunk):
                 self.batch.token[i] = tok
-                self.batch.pos[i] = batch_start + i
+                self.batch.pos[i] = self.n_past + i
                 self.batch.n_seq_id[i] = 1
                 self.batch.seq_id[i][0] = 0
                 # Only request logits for the very last token of the entire prompt
@@ -215,6 +217,8 @@ class Llama:
             if ret != 0:
                 llama_cpp._lib.llama_sampler_free(sampler)
                 raise RuntimeError(f"llama_decode failed with error code {ret}")
+
+            self.n_past += len(chunk)
 
         n_cur = total_tokens
 
@@ -238,7 +242,7 @@ class Llama:
 
             self.batch.n_tokens = 0
             self.batch.token[0] = new_token_id
-            self.batch.pos[0] = n_cur
+            self.batch.pos[0] = self.n_past
             self.batch.n_seq_id[0] = 1
             self.batch.seq_id[0][0] = 0
             self.batch.logits[0] = 1
@@ -248,6 +252,8 @@ class Llama:
             if ret != 0:
                 llama_cpp._lib.llama_sampler_free(sampler)
                 raise RuntimeError(f"llama_decode failed during generation with error code {ret}")
+
+            self.n_past += 1
             n_cur += 1
 
         llama_cpp._lib.llama_sampler_free(sampler)

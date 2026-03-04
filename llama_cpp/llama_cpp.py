@@ -170,6 +170,18 @@ _lib.llama_sampler_sample.restype = llama_token
 _lib.llama_sampler_accept.argtypes = [llama_sampler_p, llama_token]
 _lib.llama_sampler_accept.restype = None
 
+# Vocabulary queries
+_lib.llama_vocab_bos.argtypes = [llama_vocab_p]
+_lib.llama_vocab_bos.restype = llama_token
+
+# Grammar sampler
+_lib.llama_sampler_init_grammar.argtypes = [
+    llama_vocab_p,
+    ctypes.c_char_p,
+    ctypes.c_char_p,
+]
+_lib.llama_sampler_init_grammar.restype = llama_sampler_p
+
 _lib.llama_sampler_free.argtypes = [llama_sampler_p]
 _lib.llama_sampler_free.restype = None
 

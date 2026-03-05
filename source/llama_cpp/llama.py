@@ -641,19 +641,7 @@ class Llama:
         Args:
             tokens: The list of tokens to evaluate.
         """
-        if self.n_tokens > 0:
-            if not self._ctx.kv_cache_seq_rm(-1, self.n_tokens, -1):
-                # Partial removal not supported (hybrid/SWA cache).
-                # Use seq-copy workaround to preserve cached prefix.
-                try:
-                    self._ctx.kv_cache_seq_cp(0, 1, 0, self.n_tokens)
-                    self._ctx.kv_cache_seq_rm(0, 0, -1)
-                    self._ctx.kv_cache_seq_cp(1, 0, 0, self.n_tokens)
-                    self._ctx.kv_cache_seq_rm(1, 0, -1)
-                except Exception:
-                    # Last resort: clear everything
-                    self._ctx.kv_cache_clear()
-                    self.n_tokens = 0
+        self._ctx.kv_cache_seq_rm(-1, self.n_tokens, -1)
         for i in range(0, len(tokens), self.n_batch):
             batch = tokens[i : min(len(tokens), i + self.n_batch)]
             n_past = self.n_tokens
@@ -905,7 +893,8 @@ class Llama:
                     break
             if longest_prefix > 0:
                 # Try to trim the KV cache to prefix length.  Hybrid models
-                # (e.g. Qwen with SWA) may not support partial removal.
+                # (e.g. Qwen with SWA) may not support partial removal — in
+                # that case we fall through to the full reset path below.
                 if self._ctx.kv_cache_seq_rm(-1, longest_prefix, -1):
                     reset = False
                     tokens = tokens[longest_prefix:]
@@ -916,33 +905,12 @@ class Llama:
                             f"remaining {len(tokens)} prompt tokens to eval",
                             file=sys.stderr,
                         )
-                else:
-                    # Partial removal not supported (hybrid/SWA cache).
-                    # Workaround: copy prefix to a temp sequence, clear the
-                    # original, then copy back.  Full-sequence operations are
-                    # always supported by every memory backend.
-                    try:
-                        self._ctx.kv_cache_seq_cp(0, 1, 0, longest_prefix)
-                        self._ctx.kv_cache_seq_rm(0, 0, -1)
-                        self._ctx.kv_cache_seq_cp(1, 0, 0, longest_prefix)
-                        self._ctx.kv_cache_seq_rm(1, 0, -1)
-                        reset = False
-                        tokens = tokens[longest_prefix:]
-                        self.n_tokens = longest_prefix
-                        if self.verbose:
-                            print(
-                                f"Llama.generate: {longest_prefix} prefix-match hit "
-                                f"(seq-copy workaround), remaining {len(tokens)} "
-                                f"prompt tokens to eval",
-                                file=sys.stderr,
-                            )
-                    except Exception:
-                        if self.verbose:
-                            print(
-                                f"Llama.generate: {longest_prefix} prefix-match found "
-                                f"but kv cache trim failed, re-evaluating full prompt",
-                                file=sys.stderr,
-                            )
+                elif self.verbose:
+                    print(
+                        f"Llama.generate: {longest_prefix} prefix-match found "
+                        f"but partial kv removal not supported, re-evaluating full prompt",
+                        file=sys.stderr,
+                    )
 
         # Reset the model state
         if reset:

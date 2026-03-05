@@ -292,7 +292,10 @@ class LlamaContext:
 
     def kv_cache_seq_rm(self, seq_id: int, p0: int, p1: int) -> bool:
         assert self.memory is not None, "Memory is not initialized"
-        # seq_id < 0 means "match any sequence" per the C API spec
+        # Map seq_id -1 ("any") to 0 since we only use a single sequence.
+        # Passing -1 to hybrid memory backends may trigger different code
+        # paths that corrupt state or return incorrect results.
+        seq_id = seq_id if seq_id >= 0 else 0
         return llama_cpp.llama_memory_seq_rm(self.memory, seq_id, p0, p1)
 
     def kv_cache_seq_cp(self, seq_id_src: int, seq_id_dst: int, p0: int, p1: int):

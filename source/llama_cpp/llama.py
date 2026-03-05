@@ -892,19 +892,34 @@ class Llama:
                 else:
                     break
             if longest_prefix > 0:
-                # Try to trim the KV cache to prefix length.
-                self._ctx.kv_cache_seq_rm(-1, longest_prefix, -1)
-                # Proceed even if partial removal failed (hybrid/SWA
-                # caches).  Stale KV entries beyond the prefix are
-                # harmless — causal attention only attends to positions
-                # <= current, and new evals overwrite stale slots.
-                reset = False
-                tokens = tokens[longest_prefix:]
-                self.n_tokens = longest_prefix
-                if self.verbose:
+                if longest_prefix >= self.n_tokens:
+                    # Saved state is an exact prefix of the new prompt.
+                    # No stale entries beyond it — skip seq_rm entirely.
+                    reset = False
+                    tokens = tokens[longest_prefix:]
+                    self.n_tokens = longest_prefix
+                    if self.verbose:
+                        print(
+                            f"Llama.generate: {longest_prefix} prefix-match hit "
+                            f"(exact), remaining {len(tokens)} prompt tokens to eval",
+                            file=sys.stderr,
+                        )
+                elif self._ctx.kv_cache_seq_rm(-1, longest_prefix, -1):
+                    # Partial trim succeeded — stale entries removed.
+                    reset = False
+                    tokens = tokens[longest_prefix:]
+                    self.n_tokens = longest_prefix
+                    if self.verbose:
+                        print(
+                            f"Llama.generate: {longest_prefix} prefix-match hit, "
+                            f"remaining {len(tokens)} prompt tokens to eval",
+                            file=sys.stderr,
+                        )
+                elif self.verbose:
                     print(
-                        f"Llama.generate: {longest_prefix} prefix-match hit, "
-                        f"remaining {len(tokens)} prompt tokens to eval",
+                        f"Llama.generate: {longest_prefix} prefix-match found "
+                        f"but partial kv removal not supported, re-evaluating "
+                        f"full prompt",
                         file=sys.stderr,
                     )
 

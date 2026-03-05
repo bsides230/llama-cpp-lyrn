@@ -1329,7 +1329,20 @@ class Llama:
                 eval_prefix_len = Llama.longest_token_prefix(
                     self._input_ids.tolist(), prompt_tokens
                 )
-                if cache_prefix_len > eval_prefix_len:
+                should_load_cache = cache_prefix_len > eval_prefix_len
+                # If current eval state has extra trailing tokens (e.g. previous
+                # completion) and backend cannot trim partial KV, loading an
+                # equivalent-length cached prefix state avoids forced full
+                # prompt re-evaluation.
+                if (
+                    not should_load_cache
+                    and cache_prefix_len == eval_prefix_len
+                    and cache_item.n_tokens < self.n_tokens
+                    and cache_prefix_len == cache_item.n_tokens
+                ):
+                    should_load_cache = True
+
+                if should_load_cache:
                     self.load_state(cache_item)
                     if self.verbose:
                         print("Llama._create_completion: cache hit", file=sys.stderr)

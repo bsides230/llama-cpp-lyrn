@@ -886,7 +886,7 @@ class Llama:
         # Check for kv cache prefix match
         if reset and self.n_tokens > 0:
             longest_prefix = 0
-            for a, b in zip(self._input_ids, tokens[:-1]):
+            for a, b in zip(self._input_ids, tokens):
                 if a == b:
                     longest_prefix += 1
                 else:

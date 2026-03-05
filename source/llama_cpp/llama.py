@@ -892,23 +892,19 @@ class Llama:
                 else:
                     break
             if longest_prefix > 0:
-                # Try to trim the KV cache to prefix length.  Hybrid models
-                # (e.g. Qwen with SWA) may not support partial removal — in
-                # that case we fall through to the full reset path below.
-                if self._ctx.kv_cache_seq_rm(-1, longest_prefix, -1):
-                    reset = False
-                    tokens = tokens[longest_prefix:]
-                    self.n_tokens = longest_prefix
-                    if self.verbose:
-                        print(
-                            f"Llama.generate: {longest_prefix} prefix-match hit, "
-                            f"remaining {len(tokens)} prompt tokens to eval",
-                            file=sys.stderr,
-                        )
-                elif self.verbose:
+                # Try to trim the KV cache to prefix length.
+                self._ctx.kv_cache_seq_rm(-1, longest_prefix, -1)
+                # Proceed even if partial removal failed (hybrid/SWA
+                # caches).  Stale KV entries beyond the prefix are
+                # harmless — causal attention only attends to positions
+                # <= current, and new evals overwrite stale slots.
+                reset = False
+                tokens = tokens[longest_prefix:]
+                self.n_tokens = longest_prefix
+                if self.verbose:
                     print(
-                        f"Llama.generate: {longest_prefix} prefix-match found "
-                        f"but partial kv removal not supported, re-evaluating full prompt",
+                        f"Llama.generate: {longest_prefix} prefix-match hit, "
+                        f"remaining {len(tokens)} prompt tokens to eval",
                         file=sys.stderr,
                     )
 

@@ -16,8 +16,10 @@ if hasattr(sys.stdout, 'reconfigure'):
 if hasattr(sys.stderr, 'reconfigure'):
     sys.stderr.reconfigure(encoding='utf-8')
 
-# Add current directory to sys.path
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+# Add source directory to sys.path so we can import llama_cpp bindings
+_script_dir = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(_script_dir, "source"))
+sys.path.append(_script_dir)
 
 from llama_cpp import Llama
 
@@ -179,8 +181,6 @@ def attempt_load_model(settings_manager):
             use_mlock=True,
             use_mmap=False,
             chat_format=active_config.get("chat_format"),
-            add_bos=True,
-            add_eos=True,
             verbose=True
         )
         print("Model loaded successfully.")

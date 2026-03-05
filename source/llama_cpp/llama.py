@@ -893,8 +893,8 @@ class Llama:
                     break
             if longest_prefix > 0:
                 # Try to trim the KV cache to prefix length.  Hybrid models
-                # (e.g. GDN) may not support partial removal — in that case we
-                # fall through to the full reset path below.
+                # (e.g. Qwen with SWA) may not support partial removal — in
+                # that case we fall through to the full reset path below.
                 if self._ctx.kv_cache_seq_rm(-1, longest_prefix, -1):
                     reset = False
                     tokens = tokens[longest_prefix:]
@@ -2144,13 +2144,13 @@ class Llama:
     def save_state(self) -> LlamaState:
         if self.verbose:
             print("Llama.save_state: saving llama state", file=sys.stderr)
-        state_size = llama_cpp.llama_get_state_size(self._ctx.ctx)
+        state_size = llama_cpp.llama_state_get_size(self._ctx.ctx)
         if self.verbose:
             print(f"Llama.save_state: got state size: {state_size}", file=sys.stderr)
         llama_state = (ctypes.c_uint8 * int(state_size))()
         if self.verbose:
             print("Llama.save_state: allocated state", file=sys.stderr)
-        n_bytes = llama_cpp.llama_copy_state_data(self._ctx.ctx, llama_state)
+        n_bytes = llama_cpp.llama_state_get_data(self._ctx.ctx, llama_state, state_size)
         if self.verbose:
             print(f"Llama.save_state: copied llama state: {n_bytes}", file=sys.stderr)
         if int(n_bytes) > int(state_size):
@@ -2183,7 +2183,7 @@ class Llama:
         LLamaStateArrayType = ctypes.c_uint8 * state_size
         llama_state = LLamaStateArrayType.from_buffer_copy(state.llama_state)
 
-        if llama_cpp.llama_set_state_data(self._ctx.ctx, llama_state) != state_size:
+        if llama_cpp.llama_state_set_data(self._ctx.ctx, llama_state, state_size) != state_size:
             raise RuntimeError("Failed to set llama state data")
 
     def n_ctx(self) -> int:

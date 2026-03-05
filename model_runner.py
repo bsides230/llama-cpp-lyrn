@@ -20,6 +20,7 @@ if hasattr(sys.stderr, 'reconfigure'):
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from llama_cpp import Llama
+from llama_cpp.llama_cache import LlamaRAMCache
 
 try:
     from .settings_manager import SettingsManager
@@ -183,6 +184,12 @@ def attempt_load_model(settings_manager):
             add_eos=True,
             verbose=True
         )
+        # Enable RAM-based KV cache to preserve state across completions.
+        # This is critical for models (like Qwen) whose memory backend does
+        # not support partial KV cache removal, as it allows state
+        # save/restore to bypass that limitation.
+        cache_size = active_config.get("cache_size_bytes", 2 << 30)  # default 2 GB
+        llm.set_cache(LlamaRAMCache(capacity_bytes=cache_size))
         print("Model loaded successfully.")
         set_llm_status("idle")
         return llm, model_path_setting

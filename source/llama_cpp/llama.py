@@ -1344,6 +1344,7 @@ class Llama:
 
         finish_reason = "length"
         multibyte_fix = 0
+        prompt_state_cached = False
         for token in self.generate(
             prompt_tokens,
             top_k=top_k,
@@ -1362,6 +1363,15 @@ class Llama:
             logits_processor=logits_processor,
             grammar=grammar,
         ):
+            if self.cache and not prompt_state_cached:
+                if self.verbose:
+                    print(
+                        "Llama._create_completion: cache save (prompt state)",
+                        file=sys.stderr,
+                    )
+                self.cache[prompt_tokens] = self.save_state()
+                prompt_state_cached = True
+
             if llama_cpp.llama_token_is_eog(self._model.vocab, token):
                 text = self.detokenize(completion_tokens, prev_tokens=prompt_tokens)
                 finish_reason = "stop"

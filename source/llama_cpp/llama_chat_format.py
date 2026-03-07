@@ -208,6 +208,9 @@ class Jinja2ChatFormatter(ChatFormatter):
         self.stop_token_ids = (
             set(stop_token_ids) if stop_token_ids is not None else None
         )
+        # Freeze template "current time" at formatter creation so repeated
+        # requests keep a stable prompt prefix for KV cache reuse.
+        self._session_datetime = datetime.now()
 
         self._environment = ImmutableSandboxedEnvironment(
             loader=jinja2.BaseLoader(),
@@ -215,9 +218,8 @@ class Jinja2ChatFormatter(ChatFormatter):
             lstrip_blocks=True,
         ).from_string(self.template)
 
-    @staticmethod
-    def strftime_now(f: str) -> str:
-        return datetime.now().strftime(f)
+    def strftime_now(self, f: str) -> str:
+        return self._session_datetime.strftime(f)
 
     def __call__(
         self,

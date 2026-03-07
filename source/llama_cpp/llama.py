@@ -886,7 +886,7 @@ class Llama:
         # Check for kv cache prefix match
         if reset and self.n_tokens > 0:
             longest_prefix = 0
-            for a, b in zip(self._input_ids, tokens[:-1]):
+            for a, b in zip(self._input_ids, tokens):
                 if a == b:
                     longest_prefix += 1
                 else:
@@ -1329,7 +1329,20 @@ class Llama:
                 eval_prefix_len = Llama.longest_token_prefix(
                     self._input_ids.tolist(), prompt_tokens
                 )
-                if cache_prefix_len > eval_prefix_len:
+                should_load_cache = cache_prefix_len > eval_prefix_len
+                # If current eval state has extra trailing tokens (e.g. previous
+                # completion) and backend cannot trim partial KV, loading an
+                # equivalent-length cached prefix state avoids forced full
+                # prompt re-evaluation.
+                if (
+                    not should_load_cache
+                    and cache_prefix_len == eval_prefix_len
+                    and cache_item.n_tokens < self.n_tokens
+                    and cache_prefix_len == cache_item.n_tokens
+                ):
+                    should_load_cache = True
+
+                if should_load_cache:
                     self.load_state(cache_item)
                     if self.verbose:
                         print("Llama._create_completion: cache hit", file=sys.stderr)
@@ -1344,6 +1357,7 @@ class Llama:
 
         finish_reason = "length"
         multibyte_fix = 0
+        prompt_state_cached = False
         for token in self.generate(
             prompt_tokens,
             top_k=top_k,
@@ -1362,6 +1376,15 @@ class Llama:
             logits_processor=logits_processor,
             grammar=grammar,
         ):
+            if self.cache and not prompt_state_cached:
+                if self.verbose:
+                    print(
+                        "Llama._create_completion: cache save (prompt state)",
+                        file=sys.stderr,
+                    )
+                self.cache[prompt_tokens] = self.save_state()
+                prompt_state_cached = True
+
             if llama_cpp.llama_token_is_eog(self._model.vocab, token):
                 text = self.detokenize(completion_tokens, prev_tokens=prompt_tokens)
                 finish_reason = "stop"

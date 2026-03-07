@@ -181,7 +181,11 @@ def attempt_load_model(settings_manager):
             use_mmap=False,
             chat_format=active_config.get("chat_format"),
             add_bos=True,
-            add_eos=True,
+            # IMPORTANT: keep EOS disabled for chat prompts.
+            # If EOS is auto-appended to every prompt, then an earlier prompt
+            # cannot be a strict prefix of the next turn's expanded prompt,
+            # which defeats KV prefix reuse.
+            add_eos=False,
             verbose=True
         )
         # Enable RAM-based KV cache to preserve state across completions.

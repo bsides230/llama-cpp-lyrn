@@ -66,12 +66,12 @@ class LlamaRAMCache(BaseLlamaCache):
     ) -> Optional[Tuple[int, ...]]:
         min_len = 0
         min_key = None
-        keys = (
-            (k, llama_cpp.llama.Llama.longest_token_prefix(k, key))
-            for k in self.cache_state.keys()
-        )
-        for k, prefix_len in keys:
-            if prefix_len > min_len:
+        for k in self.cache_state.keys():
+            prefix_len = llama_cpp.llama.Llama.longest_token_prefix(k, key)
+            # Only return entries that are full prefixes of the requested key.
+            # This prevents loading a divergent state that requires kv_cache_seq_rm,
+            # which some model backends (e.g. hybrid cache) do not support.
+            if prefix_len == len(k) and prefix_len > min_len:
                 min_len = prefix_len
                 min_key = k
         return min_key
@@ -122,7 +122,7 @@ class LlamaDiskCache(BaseLlamaCache):
         min_key: Optional[Tuple[int, ...]] = None
         for k in self.cache.iterkeys():  # type: ignore
             prefix_len = llama_cpp.llama.Llama.longest_token_prefix(k, key)
-            if prefix_len > min_len:
+            if prefix_len == len(k) and prefix_len > min_len:
                 min_len = prefix_len
                 min_key = k  # type: ignore
         return min_key

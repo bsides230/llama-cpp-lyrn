@@ -128,9 +128,19 @@ def attempt_load_model(settings_manager):
     active_config = settings.get("active", {})
     model_path_setting = active_config.get("model_path", "").strip()
 
-    models_dir = os.path.join(SCRIPT_DIR, "data", "models")
+    paths_cfg = settings.setdefault("paths", {})
+    configured_models_dir = paths_cfg.get("models")
+    models_dir = (
+        configured_models_dir
+        if configured_models_dir
+        else os.path.join(SCRIPT_DIR, "data", "models")
+    )
+    models_dir = os.path.abspath(models_dir)
     os.makedirs(models_dir, exist_ok=True)
-    settings.setdefault("paths", {})["models"] = models_dir
+    paths_cfg["models"] = models_dir
+
+    # Compatibility location used by older LYRN layouts.
+    legacy_models_dir = os.path.abspath(os.path.join(SCRIPT_DIR, "models"))
 
     if not model_path_setting:
          print("Warning: No model path configured.")
@@ -151,6 +161,9 @@ def attempt_load_model(settings_manager):
         candidates = [
             os.path.join(models_dir, raw),
             os.path.join(models_dir, os.path.basename(raw)),
+            os.path.join(legacy_models_dir, raw),
+            os.path.join(legacy_models_dir, os.path.basename(raw)),
+            os.path.join(SCRIPT_DIR, raw),
         ]
 
         resolved_path = None
@@ -160,9 +173,26 @@ def attempt_load_model(settings_manager):
                 resolved_path = c_abs
                 break
 
+        # If configured model path is stale, fall back to default local model file.
+        if not resolved_path:
+            fallback_candidates = [
+                os.path.join(models_dir, "model.gguf"),
+                os.path.join(legacy_models_dir, "model.gguf"),
+            ]
+            for c in fallback_candidates:
+                c_abs = os.path.abspath(c)
+                if os.path.exists(c_abs):
+                    print(
+                        f"Model path '{model_path_setting}' not found; using fallback model: {c_abs}"
+                    )
+                    resolved_path = c_abs
+                    break
+
     if not resolved_path:
         print(f"Error: Model path not found: {model_path_setting}")
-        print(f"Searched in fixed module models_dir={models_dir}")
+        print(
+            f"Searched models directories: primary={models_dir}, legacy={legacy_models_dir}"
+        )
         set_llm_status("error")
         write_error(f"Model path not found: {model_path_setting}")
         return None, model_path_setting

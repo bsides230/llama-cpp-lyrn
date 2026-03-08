@@ -1,7 +1,6 @@
 import os
 import sys
 import time
-import datetime
 import json
 import signal
 import threading
@@ -20,20 +19,11 @@ if hasattr(sys.stderr, 'reconfigure'):
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from llama_cpp import Llama
-from llama_cpp.llama_cache import LlamaRAMCache
-
-try:
-    from .settings_manager import SettingsManager
-    from .snapshot_loader import SnapshotLoader
-    from .delta_manager import DeltaManager
-    from .chat_manager import ChatManager
-    from .automation_controller import AutomationController
-except ImportError:
-    from settings_manager import SettingsManager
-    from snapshot_loader import SnapshotLoader
-    from delta_manager import DeltaManager
-    from chat_manager import ChatManager
-    from automation_controller import AutomationController
+from settings_manager import SettingsManager
+from snapshot_loader import SnapshotLoader
+from delta_manager import DeltaManager
+from chat_manager import ChatManager
+from automation_controller import AutomationController
 
 # Global flag for clean shutdown
 running = True
@@ -48,12 +38,11 @@ signal.signal(signal.SIGINT, signal_handler)
 signal.signal(signal.SIGTERM, signal_handler)
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-TRIGGER_FILE = os.path.join(SCRIPT_DIR, "data", "chat_trigger.txt")
-STOP_TRIGGER = os.path.join(SCRIPT_DIR, "data", "stop_trigger.txt")
-REBUILD_TRIGGER = os.path.join(SCRIPT_DIR, "data", "rebuild_trigger.txt")
-LLM_STATUS_FILE = os.path.join(SCRIPT_DIR, "data", "global_flags", "llm_status.txt")
-STATS_FILE = os.path.join(SCRIPT_DIR, "data", "global_flags", "llm_stats.json")
-LAST_ERROR_FILE = os.path.join(SCRIPT_DIR, "data", "global_flags", "last_error.txt")
+TRIGGER_FILE = os.path.join(SCRIPT_DIR, "chat_trigger.txt")
+STOP_TRIGGER = os.path.join(SCRIPT_DIR, "stop_trigger.txt")
+REBUILD_TRIGGER = os.path.join(SCRIPT_DIR, "rebuild_trigger.txt")
+LLM_STATUS_FILE = os.path.join(SCRIPT_DIR, "global_flags", "llm_status.txt")
+STATS_FILE = os.path.join(SCRIPT_DIR, "global_flags", "llm_stats.json")
 
 def set_llm_status(status: str):
     try:
@@ -69,13 +58,6 @@ def write_stats(stats_data):
             json.dump(stats_data, f)
     except Exception as e:
         print(f"Error writing stats: {e}")
-
-def write_error(error_msg: str):
-    try:
-        with open(LAST_ERROR_FILE, 'w', encoding='utf-8') as f:
-            f.write(error_msg)
-    except Exception as e:
-        print(f"Error writing last error: {e}")
 
 def parse_metrics(log_output: str):
     stats = {}
@@ -122,119 +104,9 @@ def parse_metrics(log_output: str):
         pass
     return stats
 
-def attempt_load_model(settings_manager):
-    """Attempts to load the model based on current settings."""
-    settings = settings_manager.settings
-    active_config = settings.get("active", {})
-    model_path_setting = active_config.get("model_path", "").strip()
-
-    paths_cfg = settings.setdefault("paths", {})
-    configured_models_dir = paths_cfg.get("models")
-    models_dir = (
-        configured_models_dir
-        if configured_models_dir
-        else os.path.join(SCRIPT_DIR, "data", "models")
-    )
-    models_dir = os.path.abspath(models_dir)
-    os.makedirs(models_dir, exist_ok=True)
-    paths_cfg["models"] = models_dir
-
-    # Compatibility location used by older LYRN layouts.
-    legacy_models_dir = os.path.abspath(os.path.join(SCRIPT_DIR, "models"))
-
-    if not model_path_setting:
-         print("Warning: No model path configured.")
-         set_llm_status("error")
-         write_error("No model path configured.")
-         return None, None
-
-    raw = model_path_setting.replace('\\', '/').lstrip('./')
-
-    if os.path.isabs(raw):
-        resolved_path = raw if os.path.exists(raw) else None
-    else:
-        if raw.startswith("data/models/"):
-            raw = raw[len("data/models/"):]
-        elif raw.startswith("models/"):
-            raw = raw[len("models/"):]
-
-        candidates = [
-            os.path.join(models_dir, raw),
-            os.path.join(models_dir, os.path.basename(raw)),
-            os.path.join(legacy_models_dir, raw),
-            os.path.join(legacy_models_dir, os.path.basename(raw)),
-            os.path.join(SCRIPT_DIR, raw),
-        ]
-
-        resolved_path = None
-        for c in candidates:
-            c_abs = os.path.abspath(c)
-            if os.path.exists(c_abs):
-                resolved_path = c_abs
-                break
-
-        # If configured model path is stale, fall back to default local model file.
-        if not resolved_path:
-            fallback_candidates = [
-                os.path.join(models_dir, "model.gguf"),
-                os.path.join(legacy_models_dir, "model.gguf"),
-            ]
-            for c in fallback_candidates:
-                c_abs = os.path.abspath(c)
-                if os.path.exists(c_abs):
-                    print(
-                        f"Model path '{model_path_setting}' not found; using fallback model: {c_abs}"
-                    )
-                    resolved_path = c_abs
-                    break
-
-    if not resolved_path:
-        print(f"Error: Model path not found: {model_path_setting}")
-        print(
-            f"Searched models directories: primary={models_dir}, legacy={legacy_models_dir}"
-        )
-        set_llm_status("error")
-        write_error(f"Model path not found: {model_path_setting}")
-        return None, model_path_setting
-
-    print(f"Loading model: {resolved_path}")
-    set_llm_status("loading")
-
-    try:
-        llm = Llama(
-            model_path=resolved_path,
-            n_ctx=active_config.get("n_ctx", 2048),
-            n_threads=active_config.get("n_threads", 4),
-            n_gpu_layers=active_config.get("n_gpu_layers", 0),
-            n_batch=active_config.get("n_batch", 512),
-            use_mlock=True,
-            use_mmap=False,
-            chat_format=active_config.get("chat_format"),
-            add_bos=True,
-            # IMPORTANT: keep EOS disabled for chat prompts.
-            # If EOS is auto-appended to every prompt, then an earlier prompt
-            # cannot be a strict prefix of the next turn's expanded prompt,
-            # which defeats KV prefix reuse.
-            add_eos=False,
-            verbose=True
-        )
-        # Enable RAM-based KV cache to preserve state across completions.
-        # This is critical for models (like Qwen) whose memory backend does
-        # not support partial KV cache removal, as it allows state
-        # save/restore to bypass that limitation.
-        cache_size = active_config.get("cache_size_bytes", 2 << 30)  # default 2 GB
-        llm.set_cache(LlamaRAMCache(capacity_bytes=cache_size))
-        print("Model loaded successfully.")
-        set_llm_status("idle")
-        return llm, model_path_setting
-    except Exception as e:
-        print(f"Failed to load model: {e}")
-        set_llm_status("error")
-        write_error(f"Failed to load model: {e}")
-        return None, model_path_setting
-
 def main():
-    print("--- Model Runner Starting (v5 Logic) ---")
+    print("--- Model Runner Starting (v4 Logic) ---")
+    set_llm_status("loading")
 
     # 1. Initialize Managers
     settings_manager = SettingsManager()
@@ -257,15 +129,44 @@ def main():
     chat_dir = settings.get("paths", {}).get("chat", "chat")
     chat_manager = ChatManager(chat_dir, settings_manager, role_mappings)
 
-    # 2. Initial Model Load Attempt
-    # We do NOT return if this fails. We just loop.
-    llm, loaded_model_setting = attempt_load_model(settings_manager)
+    # 2. Load Model
+    active_config = settings.get("active", {})
+    model_path = active_config.get("model_path", "")
+
+    if not model_path or not os.path.exists(model_path):
+        print(f"Error: Model path not found: {model_path}")
+        set_llm_status("error")
+        return
+
+    print(f"Loading model: {model_path}")
+
+    # Use v4 logic for model loading: use_mlock=True, use_mmap=False
+    try:
+        llm = Llama(
+            model_path=model_path,
+            n_ctx=active_config.get("n_ctx", 2048),
+            n_threads=active_config.get("n_threads", 4),
+            n_gpu_layers=active_config.get("n_gpu_layers", 0),
+            n_batch=active_config.get("n_batch", 512),
+            use_mlock=True,
+            use_mmap=False,
+            chat_format=active_config.get("chat_format"),
+            add_bos=True,
+            add_eos=True,
+            verbose=True
+        )
+        print("Model loaded successfully.")
+        set_llm_status("idle")
+    except Exception as e:
+        print(f"Failed to load model: {e}")
+        set_llm_status("error")
+        return
 
     # 3. Main Loop
     print(f"Watching for trigger: {TRIGGER_FILE}")
 
     while running:
-        # Check for Rebuild Trigger
+        # Check for Rebuild Trigger (Just reloads snapshot into memory)
         if os.path.exists(REBUILD_TRIGGER):
             print(f"[Runner] Rebuild trigger detected.")
             try:
@@ -274,15 +175,8 @@ def main():
                 settings = settings_manager.settings
                 snapshot_loader.build_master_prompt_from_components()
                 print("[Runner] Snapshot rebuilt.")
-
-                # Check if model config changed or we have no model
-                current_model_setting = settings.get("active", {}).get("model_path", "")
-                if llm is None or current_model_setting != loaded_model_setting:
-                    print("[Runner] Configuration changed or no model loaded. Attempting reload.")
-                    llm, loaded_model_setting = attempt_load_model(settings_manager)
-
             except Exception as e:
-                print(f"[Runner] Error rebuilding/reloading: {e}")
+                print(f"[Runner] Error rebuilding snapshot: {e}")
 
         if os.path.exists(TRIGGER_FILE):
             print(f"[Runner] Trigger detected: {TRIGGER_FILE}")
@@ -294,11 +188,6 @@ def main():
             except Exception:
                 pass
 
-            # Check if we have a model. If not, try loading one last time
-            if llm is None:
-                 print("[Runner] No model loaded. Attempting late load...")
-                 llm, loaded_model_setting = attempt_load_model(settings_manager)
-
             try:
                 with open(TRIGGER_FILE, 'r', encoding='utf-8') as f:
                     chat_file_path_str = f.read().strip()
@@ -308,16 +197,7 @@ def main():
                 except OSError: pass
 
                 if chat_file_path_str:
-                    if llm:
-                        process_request(llm, chat_file_path_str, snapshot_loader, delta_manager, chat_manager, settings_manager)
-                    else:
-                        print("[Runner] Cannot process request: No model loaded.")
-                        # Write helpful error to chat
-                        try:
-                            with open(chat_file_path_str, "a", encoding="utf-8") as f:
-                                f.write("\n\n[Error: No model loaded. Please configure a valid model path in Settings.]\n")
-                        except: pass
-                        set_llm_status("error")
+                    process_request(llm, chat_file_path_str, snapshot_loader, delta_manager, chat_manager, settings_manager)
 
             except Exception as e:
                 print(f"Error processing trigger: {e}")
@@ -331,7 +211,6 @@ def main():
 def process_request(llm, chat_file_path_str: str, snapshot_loader, delta_manager, chat_manager, settings_manager):
     with model_lock:
         set_llm_status("busy")
-        print(f"[Runner DEBUG {datetime.datetime.now()}] Processing request from: {chat_file_path_str}")
 
         # Cleanup stop trigger
         try:
@@ -341,19 +220,14 @@ def process_request(llm, chat_file_path_str: str, snapshot_loader, delta_manager
 
         chat_file_path = Path(chat_file_path_str)
         if not chat_file_path.exists():
-            print(f"[Runner ERROR {datetime.datetime.now()}] Chat file not found: {chat_file_path}")
+            print(f"Error: Chat file not found: {chat_file_path}")
             set_llm_status("idle")
             return
 
         try:
             # 1. Read User Message from the Triggered File
             # start_lyrn.py writes: user\n{message}\n
-            try:
-                content = chat_file_path.read_text(encoding='utf-8')
-            except Exception as e:
-                print(f"[Runner ERROR {datetime.datetime.now()}] Failed to read chat file: {e}")
-                set_llm_status("error")
-                return
+            content = chat_file_path.read_text(encoding='utf-8')
 
             user_message = ""
             # Check for v4 format first
@@ -367,7 +241,7 @@ def process_request(llm, chat_file_path_str: str, snapshot_loader, delta_manager
                 else:
                     user_message = content.strip()
 
-            print(f"[Runner DEBUG {datetime.datetime.now()}] User Message extracted: {user_message[:50]}...")
+            print(f"User Message: {user_message[:50]}...")
 
             # 2. Build Context (v4 Logic)
             # Master Prompt
@@ -402,7 +276,7 @@ def process_request(llm, chat_file_path_str: str, snapshot_loader, delta_manager
             active_config = settings_manager.settings.get("active", {})
             log_capture_buffer = io.StringIO()
 
-            print(f"[Runner DEBUG {datetime.datetime.now()}] Generating response... (Use mlock: True, mmap: False)")
+            print(f"[Runner] Generating response... (Use mlock: True, mmap: False)")
 
             with contextlib.redirect_stderr(log_capture_buffer):
                 stream = llm.create_chat_completion(
@@ -419,11 +293,10 @@ def process_request(llm, chat_file_path_str: str, snapshot_loader, delta_manager
                 with open(chat_file_path, "a", encoding="utf-8") as f:
                     f.write("\n\nmodel\n")
 
-                    token_count = 0
                     for token_data in stream:
                         # Check stop
                         if os.path.exists(STOP_TRIGGER):
-                            print(f"[Runner DEBUG {datetime.datetime.now()}] Stop trigger detected.")
+                            print("[Runner] Stop trigger detected.")
                             try:
                                 os.remove(STOP_TRIGGER)
                             except: pass
@@ -436,7 +309,6 @@ def process_request(llm, chat_file_path_str: str, snapshot_loader, delta_manager
                             if text:
                                 f.write(text)
                                 f.flush()
-                                token_count += 1
 
             # 5. Parse Metrics from Captured Log
             log_output = log_capture_buffer.getvalue()
@@ -451,9 +323,7 @@ def process_request(llm, chat_file_path_str: str, snapshot_loader, delta_manager
             set_llm_status("idle")
 
         except Exception as e:
-            print(f"[Runner ERROR {datetime.datetime.now()}] Error during generation: {e}")
-            import traceback
-            traceback.print_exc()
+            print(f"Error during generation: {e}")
             try:
                 with open(chat_file_path, "a", encoding="utf-8") as f:
                     f.write(f"\n[Error: {e}]\n")

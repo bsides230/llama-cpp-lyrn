@@ -641,6 +641,11 @@ class Llama:
         Args:
             tokens: The list of tokens to evaluate.
         """
+        # Defensive: remove any stale KV entries beyond our current position.
+        # During normal sequential generation there are none, so this is a
+        # no-op.  Hybrid memory backends may return False for partial removal
+        # — that is safe to ignore because generate() already ensures no stale
+        # data is present before calling eval().
         self._ctx.kv_cache_seq_rm(-1, self.n_tokens, -1)
         for i in range(0, len(tokens), self.n_batch):
             batch = tokens[i : min(len(tokens), i + self.n_batch)]
@@ -1660,15 +1665,23 @@ class Llama:
             if self.cache:
                 if self.verbose:
                     print("Llama._create_completion: cache save", file=sys.stderr)
-                self.cache[prompt_tokens + completion_tokens] = self.save_state()
-                if self.verbose:
-                    print("Llama._create_completion: cache saved", file=sys.stderr)
+                try:
+                    self.cache[prompt_tokens + completion_tokens] = self.save_state()
+                    if self.verbose:
+                        print("Llama._create_completion: cache saved", file=sys.stderr)
+                except Exception as e:
+                    if self.verbose:
+                        print(f"Llama._create_completion: cache save failed: {e}", file=sys.stderr)
             return
 
         if self.cache:
             if self.verbose:
                 print("Llama._create_completion: cache save", file=sys.stderr)
-            self.cache[prompt_tokens + completion_tokens] = self.save_state()
+            try:
+                self.cache[prompt_tokens + completion_tokens] = self.save_state()
+            except Exception as e:
+                if self.verbose:
+                    print(f"Llama._create_completion: cache save failed: {e}", file=sys.stderr)
 
         text_str = text.decode("utf-8", errors="ignore")
 
@@ -2155,13 +2168,25 @@ class Llama:
     def save_state(self) -> LlamaState:
         if self.verbose:
             print("Llama.save_state: saving llama state", file=sys.stderr)
-        state_size = llama_cpp.llama_state_get_size(self._ctx.ctx)
-        if self.verbose:
-            print(f"Llama.save_state: got state size: {state_size}", file=sys.stderr)
-        llama_state = (ctypes.c_uint8 * int(state_size))()
-        if self.verbose:
-            print("Llama.save_state: allocated state", file=sys.stderr)
-        n_bytes = llama_cpp.llama_state_get_data(self._ctx.ctx, llama_state, state_size)
+        # Use the per-sequence API (seq_id 0) which works reliably with
+        # hybrid memory backends (e.g. Qwen SWA).  The full-context API
+        # (llama_state_get_data) can hang or allocate huge buffers on such
+        # models.  Fall back to the full-context API only if seq returns 0.
+        seq_size = llama_cpp.llama_state_seq_get_size(self._ctx.ctx, 0)
+        use_seq_api = seq_size > 0
+        if use_seq_api:
+            state_size = seq_size
+            if self.verbose:
+                print(f"Llama.save_state: using seq API, size: {state_size}", file=sys.stderr)
+            llama_state = (ctypes.c_uint8 * int(state_size))()
+            n_bytes = llama_cpp.llama_state_seq_get_data(self._ctx.ctx, llama_state, state_size, 0)
+        else:
+            state_size = llama_cpp.llama_state_get_size(self._ctx.ctx)
+            if self.verbose:
+                print(f"Llama.save_state: using full API, size: {state_size}", file=sys.stderr)
+            llama_state = (ctypes.c_uint8 * int(state_size))()
+            n_bytes = llama_cpp.llama_state_get_data(self._ctx.ctx, llama_state, state_size)
+
         if self.verbose:
             print(f"Llama.save_state: copied llama state: {n_bytes}", file=sys.stderr)
         if int(n_bytes) > int(state_size):
@@ -2179,6 +2204,7 @@ class Llama:
             n_tokens=self.n_tokens,
             llama_state=bytes(llama_state_compact),
             llama_state_size=n_bytes,
+            llama_state_seq=use_seq_api,
             seed=self._seed,
         )
 
@@ -2194,8 +2220,16 @@ class Llama:
         LLamaStateArrayType = ctypes.c_uint8 * state_size
         llama_state = LLamaStateArrayType.from_buffer_copy(state.llama_state)
 
-        if llama_cpp.llama_state_set_data(self._ctx.ctx, llama_state, state_size) != state_size:
-            raise RuntimeError("Failed to set llama state data")
+        use_seq = getattr(state, "llama_state_seq", False)
+        if use_seq:
+            # Clear KV cache first so seq_set_data loads into a clean state.
+            self._ctx.kv_cache_clear()
+            n_read = llama_cpp.llama_state_seq_set_data(self._ctx.ctx, llama_state, state_size, 0)
+            if n_read == 0:
+                raise RuntimeError("Failed to set llama state data (seq API)")
+        else:
+            if llama_cpp.llama_state_set_data(self._ctx.ctx, llama_state, state_size) != state_size:
+                raise RuntimeError("Failed to set llama state data")
 
     def n_ctx(self) -> int:
         """Return the context window size."""
@@ -2401,6 +2435,7 @@ class LlamaState:
         llama_state: bytes,
         llama_state_size: int,
         seed: int,
+        llama_state_seq: bool = False,
     ):
         self.input_ids = input_ids
         self.scores = scores
@@ -2408,6 +2443,7 @@ class LlamaState:
         self.llama_state = llama_state
         self.llama_state_size = llama_state_size
         self.seed = seed
+        self.llama_state_seq = llama_state_seq
 
 
 LogitsProcessor = Callable[

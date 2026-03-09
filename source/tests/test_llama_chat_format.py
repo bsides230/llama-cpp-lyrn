@@ -1,4 +1,5 @@
 import json
+import time
 
 import jinja2
 
@@ -87,3 +88,25 @@ def test_hf_tokenizer_config_str_to_chat_formatter():
     )
 
     assert chat_formatter_respoonse.prompt == ("<s>[INST] Hello, world! [/INST]</s>" "")
+
+
+def test_jinja2_chat_formatter_strftime_now_is_stable_per_session():
+    formatter = llama_chat_format.Jinja2ChatFormatter(
+        template="{{ strftime_now('%Y-%m-%d %H:%M:%S') }}",
+        eos_token="</s>",
+        bos_token="<s>",
+    )
+
+    first = formatter(
+        messages=[
+            ChatCompletionRequestUserMessage(role="user", content="Hello"),
+        ]
+    ).prompt
+    time.sleep(1.1)
+    second = formatter(
+        messages=[
+            ChatCompletionRequestUserMessage(role="user", content="Hello"),
+        ]
+    ).prompt
+
+    assert first == second

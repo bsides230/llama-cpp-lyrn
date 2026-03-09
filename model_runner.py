@@ -128,7 +128,7 @@ def attempt_load_model(settings_manager):
     active_config = settings.get("active", {})
     model_path_setting = active_config.get("model_path", "").strip()
 
-    models_dir = os.path.join(SCRIPT_DIR, "data", "models")
+    models_dir = os.path.join(SCRIPT_DIR, "models")
     os.makedirs(models_dir, exist_ok=True)
     settings.setdefault("paths", {})["models"] = models_dir
 

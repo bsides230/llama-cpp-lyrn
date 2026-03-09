@@ -134,7 +134,7 @@ def attempt_load_model(settings_manager):
          write_error("No model path configured.")
          return None, None
 
-    resolved_path = os.path.join(SCRIPT_DIR, "models", model_path_setting)
+    resolved_path = os.path.join(SCRIPT_DIR, model_path_setting)
 
     if not os.path.exists(resolved_path):
         print(f"Error: Model not found: {resolved_path}")

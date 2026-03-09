@@ -308,16 +308,18 @@ def process_request(llm, chat_file_path_str: str, snapshot_loader, delta_manager
                 else:
                     user_message = content.strip()
 
-            print(f"[Runner DEBUG {datetime.datetime.now()}] User Message extracted: {user_message[:50]}...")
+            print(f"[Runner DEBUG {datetime.datetime.now()}] User Message extracted ({len(user_message)} chars): {user_message[:100]}...")
 
             # 2. Build Context (v4 Logic)
             # Master Prompt
             system_prompt = snapshot_loader.load_base_prompt()
+            print(f"[Runner DEBUG {datetime.datetime.now()}] System prompt loaded: {len(system_prompt)} chars, empty={not system_prompt}")
 
             # Deltas
             delta_content = ""
             if settings_manager.get_setting("enable_deltas", True):
                 delta_content = delta_manager.get_delta_content()
+                print(f"[Runner DEBUG {datetime.datetime.now()}] Delta content: {len(delta_content)} chars")
 
             # Construct Messages
             # Order: Snapshot -> History -> Deltas -> New Input
@@ -327,6 +329,9 @@ def process_request(llm, chat_file_path_str: str, snapshot_loader, delta_manager
             # IMPORTANT: Exclude the current chat file so we don't duplicate it or treat it as history yet
             history = chat_manager.get_chat_history_messages(exclude_paths=[str(chat_file_path.resolve())])
             messages.extend(history)
+            print(f"[Runner DEBUG {datetime.datetime.now()}] Chat history: {len(history)} messages")
+            for i, h in enumerate(history):
+                print(f"[Runner DEBUG]   history[{i}]: role={h.get('role')}, content_len={len(h.get('content', ''))}")
 
             # Deltas (Injected after history, before new input)
             if delta_content:
@@ -336,14 +341,76 @@ def process_request(llm, chat_file_path_str: str, snapshot_loader, delta_manager
             # Merge if last was user (alternating roles logic)
             if messages and messages[-1].get("role") == "user":
                 messages[-1]["content"] += "\n\n" + user_message
+                print(f"[Runner DEBUG {datetime.datetime.now()}] Merged user message into last history message")
             else:
                 messages.append({"role": "user", "content": user_message})
+                print(f"[Runner DEBUG {datetime.datetime.now()}] Appended new user message")
+
+            # --- DEBUG: Dump full message structure ---
+            print(f"[Runner DEBUG {datetime.datetime.now()}] === FULL MESSAGE STRUCTURE ({len(messages)} messages) ===")
+            for i, msg in enumerate(messages):
+                role = msg.get("role", "?")
+                content = msg.get("content", "")
+                preview = content[:80].replace('\n', '\\n') if content else "(empty)"
+                print(f"[Runner DEBUG]   msg[{i}]: role={role}, len={len(content)}, preview: {preview}")
+            print(f"[Runner DEBUG {datetime.datetime.now()}] === END MESSAGE STRUCTURE ===")
+
+            # --- DEBUG: Model info ---
+            print(f"[Runner DEBUG {datetime.datetime.now()}] Model chat_format: {llm.chat_format}")
+            print(f"[Runner DEBUG {datetime.datetime.now()}] Model n_ctx: {llm.n_ctx()}")
+            print(f"[Runner DEBUG {datetime.datetime.now()}] Model cache active: {llm.cache is not None}")
 
             # 3. Generate with Stderr Capture
             active_config = settings_manager.settings.get("active", {})
             log_capture_buffer = io.StringIO()
 
             print(f"[Runner DEBUG {datetime.datetime.now()}] Generating response... (Use mlock: True, mmap: False)")
+
+            # --- DEBUG: Tokenize messages to check prompt size ---
+            try:
+                from llama_cpp import llama_chat_format as _lcf
+                handler = (
+                    llm.chat_handler
+                    or llm._chat_handlers.get(llm.chat_format)
+                    or _lcf.get_chat_completion_handler(llm.chat_format)
+                )
+                # Try to get the formatter to see the actual prompt
+                fmt = getattr(handler, '__self__', None) or getattr(handler, 'chat_formatter', None)
+                if hasattr(handler, '__wrapped__'):
+                    fmt = handler.__wrapped__
+                # Try to render the prompt for debug
+                try:
+                    if hasattr(llm, '_chat_handlers') and llm.chat_format in llm._chat_handlers:
+                        # Jinja2 template handler - get the formatter
+                        _handler = llm._chat_handlers[llm.chat_format]
+                        if hasattr(_handler, 'chat_formatter'):
+                            _result = _handler.chat_formatter(messages=messages)
+                        else:
+                            _result = None
+                    else:
+                        _result = None
+
+                    if _result and hasattr(_result, 'prompt'):
+                        prompt_str = _result.prompt
+                        prompt_tokens = llm.tokenize(prompt_str.encode("utf-8"), add_bos=False, special=True)
+                        n_ctx = llm.n_ctx()
+                        max_tok = active_config.get("max_tokens", 2048)
+                        print(f"[Runner DEBUG {datetime.datetime.now()}] === PROMPT DEBUG ===")
+                        print(f"[Runner DEBUG]   Prompt length: {len(prompt_str)} chars, {len(prompt_tokens)} tokens")
+                        print(f"[Runner DEBUG]   Context window: {n_ctx}, max_tokens: {max_tok}")
+                        print(f"[Runner DEBUG]   Remaining for generation: {n_ctx - len(prompt_tokens)} tokens")
+                        if len(prompt_tokens) + max_tok > n_ctx:
+                            print(f"[Runner DEBUG]   WARNING: Prompt + max_tokens ({len(prompt_tokens) + max_tok}) exceeds n_ctx ({n_ctx})!")
+                        # Show first and last 200 chars of the formatted prompt
+                        print(f"[Runner DEBUG]   Prompt start: {prompt_str[:200].replace(chr(10), '\\n')}")
+                        print(f"[Runner DEBUG]   Prompt end: {prompt_str[-200:].replace(chr(10), '\\n')}")
+                        print(f"[Runner DEBUG {datetime.datetime.now()}] === END PROMPT DEBUG ===")
+                    else:
+                        print(f"[Runner DEBUG {datetime.datetime.now()}] Could not extract formatted prompt for debug")
+                except Exception as dbg_err:
+                    print(f"[Runner DEBUG {datetime.datetime.now()}] Prompt debug failed: {dbg_err}")
+            except Exception as dbg_err2:
+                print(f"[Runner DEBUG {datetime.datetime.now()}] Prompt debug import failed: {dbg_err2}")
 
             with contextlib.redirect_stderr(log_capture_buffer):
                 stream = llm.create_chat_completion(
@@ -384,9 +451,17 @@ def process_request(llm, chat_file_path_str: str, snapshot_loader, delta_manager
             # Print to real stderr so start_lyrn can capture it too
             print(log_output, file=sys.stderr)
 
+            # --- DEBUG: Show generation stats from stderr ---
+            print(f"[Runner DEBUG {datetime.datetime.now()}] Tokens generated: {token_count}")
+            if "prefix-match" in log_output:
+                for line in log_output.splitlines():
+                    if "prefix-match" in line or "cache" in line.lower():
+                        print(f"[Runner DEBUG]   llama.cpp: {line.strip()}")
+
             stats = parse_metrics(log_output)
             if stats:
                 write_stats(stats)
+                print(f"[Runner DEBUG {datetime.datetime.now()}] Stats: {json.dumps(stats, indent=2)}")
 
             print("Generation complete.")
             set_llm_status("idle")

@@ -128,43 +128,18 @@ def attempt_load_model(settings_manager):
     active_config = settings.get("active", {})
     model_path_setting = active_config.get("model_path", "").strip()
 
-    models_dir = os.path.join(SCRIPT_DIR, "models")
-    os.makedirs(models_dir, exist_ok=True)
-    settings.setdefault("paths", {})["models"] = models_dir
-
     if not model_path_setting:
          print("Warning: No model path configured.")
          set_llm_status("error")
          write_error("No model path configured.")
          return None, None
 
-    raw = model_path_setting.replace('\\', '/').lstrip('./')
+    resolved_path = os.path.join(SCRIPT_DIR, "models", model_path_setting)
 
-    if os.path.isabs(raw):
-        resolved_path = raw if os.path.exists(raw) else None
-    else:
-        if raw.startswith("data/models/"):
-            raw = raw[len("data/models/"):]
-        elif raw.startswith("models/"):
-            raw = raw[len("models/"):]
-
-        candidates = [
-            os.path.join(models_dir, raw),
-            os.path.join(models_dir, os.path.basename(raw)),
-        ]
-
-        resolved_path = None
-        for c in candidates:
-            c_abs = os.path.abspath(c)
-            if os.path.exists(c_abs):
-                resolved_path = c_abs
-                break
-
-    if not resolved_path:
-        print(f"Error: Model path not found: {model_path_setting}")
-        print(f"Searched in fixed module models_dir={models_dir}")
+    if not os.path.exists(resolved_path):
+        print(f"Error: Model not found: {resolved_path}")
         set_llm_status("error")
-        write_error(f"Model path not found: {model_path_setting}")
+        write_error(f"Model not found: {resolved_path}")
         return None, model_path_setting
 
     print(f"Loading model: {resolved_path}")
